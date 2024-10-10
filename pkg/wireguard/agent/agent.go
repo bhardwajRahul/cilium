@@ -17,21 +17,20 @@ import (
 	"strconv"
 
 	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/job"
+	"github.com/cilium/statedb"
 	"github.com/go-openapi/strfmt"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"go4.org/netipx"
 	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/conn"
-	"golang.zx2c4.com/wireguard/device"
-	"golang.zx2c4.com/wireguard/ipc"
-	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	k8sLabels "k8s.io/apimachinery/pkg/labels"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/annotation"
+	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/clustermesh"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
@@ -43,6 +42,7 @@ import (
 	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/time"
 	"github.com/cilium/cilium/pkg/wireguard/types"
 )
 
@@ -71,19 +71,20 @@ type Agent struct {
 	privKey     wgtypes.Key
 	privKeyPath string
 	sysctl      sysctl.Sysctl
+	jobGroup    job.Group
+	db          *statedb.DB
+	mtuTable    statedb.Table[mtu.RouteMTU]
 
 	peerByNodeName   map[string]*peerConfig
 	nodeNameByNodeIP map[string]string
 	nodeNameByPubKey map[wgtypes.Key]string
-
-	cleanup []func()
 
 	// initialized in InitLocalNodeFromWireGuard
 	optOut bool
 }
 
 // NewAgent creates a new WireGuard Agent
-func NewAgent(privKeyPath string, sysctl sysctl.Sysctl) (*Agent, error) {
+func NewAgent(privKeyPath string, sysctl sysctl.Sysctl, jobGroup job.Group, db *statedb.DB, mtuTable statedb.Table[mtu.RouteMTU]) (*Agent, error) {
 	wgClient, err := wgctrl.New()
 	if err != nil {
 		return nil, err
@@ -93,12 +94,13 @@ func NewAgent(privKeyPath string, sysctl sysctl.Sysctl) (*Agent, error) {
 		privKeyPath: privKeyPath,
 		listenPort:  types.ListenPort,
 		sysctl:      sysctl,
+		jobGroup:    jobGroup,
+		db:          db,
+		mtuTable:    mtuTable,
 
 		peerByNodeName:   map[string]*peerConfig{},
 		nodeNameByNodeIP: map[string]string{},
 		nodeNameByPubKey: map[wgtypes.Key]string{},
-
-		cleanup: []func(){},
 	}, nil
 }
 
@@ -112,10 +114,6 @@ func (a *Agent) Start(cell.HookContext) (err error) {
 func (a *Agent) Stop(cell.HookContext) error {
 	a.RLock()
 	defer a.RUnlock()
-
-	for _, cleanup := range a.cleanup {
-		cleanup()
-	}
 
 	return a.wgClient.Close()
 }
@@ -158,62 +156,8 @@ func (a *Agent) InitLocalNodeFromWireGuard(localNode *node.LocalNode) {
 	a.optOut = localNode.OptOutNodeEncryption
 }
 
-func (a *Agent) initUserspaceDevice(linkMTU int) (netlink.Link, error) {
-	log.WithField(logfields.Hint,
-		"It is highly recommended to use the kernel implementation. "+
-			"See https://www.wireguard.com/install/ for details.").
-		Info("falling back to the WireGuard userspace implementation.")
-
-	tundev, err := tun.CreateTUN(types.IfaceName, linkMTU)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create tun device: %w", err)
-	}
-
-	uapiSocket, err := ipc.UAPIOpen(types.IfaceName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create uapi socket: %w", err)
-	}
-
-	uapiServer, err := ipc.UAPIListen(types.IfaceName, uapiSocket)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start WireGuard UAPI server: %w", err)
-	}
-
-	scopedLog := log.WithField(logfields.LogSubsys, "wireguard-userspace")
-	logger := &device.Logger{
-		Verbosef: scopedLog.Debugf,
-		Errorf:   scopedLog.Errorf,
-	}
-	dev := device.NewDevice(tundev, conn.NewDefaultBind(), logger)
-
-	// cleanup removes the tun device and uapi socket
-	a.cleanup = append(a.cleanup, func() {
-		uapiServer.Close()
-		dev.Close()
-	})
-
-	go func() {
-		for {
-			conn, err := uapiServer.Accept()
-			if err != nil {
-				scopedLog.WithError(err).
-					Error("failed to handle WireGuard userspace connection")
-				return
-			}
-			go dev.IpcHandle(conn)
-		}
-	}()
-
-	link, err := netlink.LinkByName(types.IfaceName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to obtain link: %w", err)
-	}
-
-	return link, err
-}
-
 // Init creates and configures the local WireGuard tunnel device.
-func (a *Agent) Init(ipcache *ipcache.IPCache, mtuConfig mtu.MTU) error {
+func (a *Agent) Init(ipcache *ipcache.IPCache) error {
 	addIPCacheListener := false
 	a.Lock()
 	a.ipCache = ipcache
@@ -226,7 +170,20 @@ func (a *Agent) Init(ipcache *ipcache.IPCache, mtuConfig mtu.MTU) error {
 		}
 	}()
 
-	linkMTU := mtuConfig.GetDeviceMTU() - mtu.WireguardOverhead
+	var mtuConfig mtu.RouteMTU
+	for {
+		var (
+			found bool
+			watch <-chan struct{}
+		)
+		mtuConfig, _, watch, found = a.mtuTable.GetWatch(a.db.ReadTxn(), mtu.MTURouteIndex.Query(mtu.DefaultPrefixV4))
+		if found {
+			break
+		}
+		<-watch
+	}
+
+	linkMTU := mtuConfig.DeviceMTU - mtu.WireguardOverhead
 
 	// try to remove any old tun devices created by userspace mode
 	link, _ := netlink.LinkByName(types.IfaceName)
@@ -247,17 +204,9 @@ func (a *Agent) Init(ipcache *ipcache.IPCache, mtuConfig mtu.MTU) error {
 			return fmt.Errorf("failed to add WireGuard device: %w", err)
 		}
 
-		// TODO: Remove this userspace fallback in Cilum v1.17
-		if !option.Config.EnableWireguardUserspaceFallback {
-			return fmt.Errorf("WireGuard not supported by the Linux kernel (netlink: %w). "+
-				"Please upgrade your kernel, manually install the kernel module "+
-				"(https://www.wireguard.com/install/), or set enable-wireguard-userspace-fallback=true", err)
-		}
-
-		link, err = a.initUserspaceDevice(linkMTU)
-		if err != nil {
-			return fmt.Errorf("WireGuard userspace: %w", err)
-		}
+		return fmt.Errorf("WireGuard not supported by the Linux kernel (netlink: %w). "+
+			"Please upgrade your kernel, or manually install the kernel module "+
+			"(https://www.wireguard.com/install/)", err)
 	}
 
 	if option.Config.EnableIPv4 {
@@ -287,10 +236,58 @@ func (a *Agent) Init(ipcache *ipcache.IPCache, mtuConfig mtu.MTU) error {
 		return fmt.Errorf("failed to set link up: %w", err)
 	}
 
+	a.jobGroup.Add(job.OneShot("mtu-reconciler", a.mtuReconciler))
+
 	// this is read by the defer statement above
 	addIPCacheListener = true
 
 	return nil
+}
+
+// mtuReconciler is a job that reconciles changes to the MTU to the WireGuard interface.
+// If an error is encountered, the job will retry with exponential backoff.
+func (a *Agent) mtuReconciler(ctx context.Context, health cell.Health) error {
+	retryTimer := backoff.Exponential{Min: 100 * time.Millisecond, Max: 1 * time.Minute}
+	retry := false
+	for {
+		mtuRoute, _, watch, found := a.mtuTable.GetWatch(a.db.ReadTxn(), mtu.MTURouteIndex.Query(mtu.DefaultPrefixV4))
+		if found {
+			link, err := netlink.LinkByName(types.IfaceName)
+			if err != nil {
+				health.Degraded("failed to get WireGuard link", err)
+				retry = true
+				goto next
+			}
+
+			linkMTU := mtuRoute.DeviceMTU - mtu.WireguardOverhead
+
+			if link.Attrs().MTU != linkMTU {
+				if err = netlink.LinkSetMTU(link, linkMTU); err != nil {
+					health.Degraded("failed to set WireGuard link mtu", err)
+					retry = true
+					goto next
+				}
+			}
+
+			health.OK(fmt.Sprintf("OK (%d)", linkMTU))
+		}
+
+		retryTimer.Reset()
+		retry = false
+
+	next:
+		if retry {
+			if err := retryTimer.Wait(ctx); err != nil {
+				return nil
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-watch:
+			}
+		}
+	}
 }
 
 func (a *Agent) RestoreFinished(cm *clustermesh.ClusterMesh) error {

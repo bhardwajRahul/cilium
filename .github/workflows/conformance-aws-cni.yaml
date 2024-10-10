@@ -60,7 +60,6 @@ concurrency:
 
 env:
   clusterName: ${{ github.repository_owner }}-${{ github.event.repository.name }}-${{ github.run_id }}-${{ github.run_attempt }}
-  cilium_cli_ci_version:
   # renovate: datasource=github-releases depName=eksctl-io/eksctl
   eksctl_version: v0.191.0
   # renovate: datasource=github-releases depName=kubernetes/kubernetes
@@ -70,7 +69,7 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -262,7 +261,7 @@ jobs:
           spot: false
 
       - name: Install Cilium CLI
-        uses: cilium/cilium-cli@c39ea5e50210fde2ccfe54d07122c48fd680ac8d # v0.16.18
+        uses: cilium/cilium-cli@6977c4a640ad45da3a95eb12054497f2bdd22c48 # v0.16.19
         with:
           skip-build: ${{ env.CILIUM_CLI_SKIP_BUILD }}
           image-repo: ${{ env.CILIUM_CLI_IMAGE_REPO }}
@@ -352,16 +351,41 @@ jobs:
     runs-on: ubuntu-latest
     needs: installation-and-connectivity
     steps:
+      # TODO remove list and filter artifact steps if this PR https://github.com/actions/upload-artifact/pull/521 is merged
+      - name: List All Artifacts
+        id: list_artifacts
+        run: |
+          echo "Fetching artifacts"
+          curl --fail --show-error --silent \
+               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/vnd.github.v3+json" \
+               "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+               | jq -r '.artifacts[] | .name' > artifacts_list.json
+      - name: Filter Artifacts
+        id: filter_artifacts
+        run: |
+          echo "Filtered Artifacts starts with cilium-sysdumps:"
+          if grep -E "^cilium-sysdumps-" artifacts_list.json; then
+            echo "sysdumps=true" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::No matching cilium-sysdumps-* artifacts found."
+          fi
+          echo "Filtered Artifacts starts with cilium-junits:"
+          if grep -E "^cilium-junits-" artifacts_list.json; then
+            echo "junits=true" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::No matching cilium-junits-* artifacts found."
+          fi
       - name: Merge Sysdumps
-        if: ${{ needs.installation-and-connectivity.result == 'failure' }}
+        if: ${{ steps.filter_artifacts.outputs.sysdumps == 'true' }}
         uses: actions/upload-artifact/merge@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-sysdumps
           pattern: cilium-sysdumps-*
           retention-days: 5
           delete-merged: true
-        continue-on-error: true
       - name: Merge JUnits
+        if: ${{ steps.filter_artifacts.outputs.junits == 'true' }}
         uses: actions/upload-artifact/merge@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: cilium-junits

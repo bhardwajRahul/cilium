@@ -27,6 +27,15 @@ rules:
 {{- end }}
 {{- end }}
 {{- end }}
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  resourceNames:
+  - cilium-config
+  verbs:
+   # allow patching of the configmap to set annotations
+  - patch
 {{- if or .Values.operator.removeNodeTaints .Values.operator.setNodeNetworkStatus (include "hasDuration" .Values.operator.endpointGCInterval) }}
 - apiGroups:
   - ""
@@ -323,7 +332,14 @@ rules:
   - delete
 {{- end }}
 {{- end }}
-{{- if or .Values.clustermesh.enableEndpointSliceSynchronization .Values.clustermesh.enableMCSAPISupport }}
+{{- if .Values.clustermesh.enableMCSAPISupport }}
+- apiGroups:
+  - multicluster.x-k8s.io
+  resources:
+  - serviceimports/status
+  verbs:
+  - update
+  - patch
 - apiGroups:
   - multicluster.x-k8s.io
   resources:
@@ -332,6 +348,13 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - multicluster.x-k8s.io
+  resources:
+  - serviceexports/status
+  verbs:
+  - update
+  - patch
 - apiGroups:
   - ""
   resources:

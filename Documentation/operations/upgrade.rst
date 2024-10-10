@@ -311,12 +311,23 @@ communicating via the proxy must reconnect to re-establish connections.
   In case of downgrades to a version that doesn't support services protocol differentiation,
   existing services with the protocol set will be deleted and recreated, without the protocol, by
   the agent, causing connection disruptions for such services.
+* MTU auto-detection is now continuous during agent lifetime, changing device MTU no longer requires
+  restarting the agent to pick up the new MTU.
+* MTU auto-detection will now use the lowest MTU of all external interfaces. Before, only the primary
+  interface was considered. One exception to this is in ENI mode where the secondary interfaces are not
+  considered for MTU auto-detection. MTU can still be configured manually via the ``MTU`` helm option,
+  ``--mtu`` agent flag or ``mtu`` option in CNI configuration.
+* Support for L7 protocol visibility using Pod annotations (``policy.cilium.io/proxy-visibility``),
+  deprecated since v1.15, has been removed.
 
 Removed Options
 ~~~~~~~~~~~~~~~
 
 * The previously deprecated ``clustermesh-ip-identities-sync-timeout`` flag has
   been removed in favor of ``clustermesh-sync-timeout``.
+* The previously deprecated built-in WireGuard userspace-mode fallback (Helm ``wireguard.userspaceFallback``)
+  has been removed. Users of WireGuard transparent encryption are required to use a Linux kernel with
+  WireGuard support.
 
 Deprecated Options
 ~~~~~~~~~~~~~~~~~~
@@ -432,7 +443,7 @@ Generate the latest ConfigMap
 
     helm template cilium \
       --namespace=kube-system \
-      --set agent.enabled=false \
+      --set agent=false \
       --set config.enabled=true \
       --set operator.enabled=false \
       > cilium-configmap.yaml
@@ -550,7 +561,7 @@ The cilium preflight manifest requires etcd support and can be built with:
     helm template cilium \
       --namespace=kube-system \
       --set preflight.enabled=true \
-      --set agent.enabled=false \
+      --set agent=false \
       --set config.enabled=false \
       --set operator.enabled=false \
       --set etcd.enabled=true \

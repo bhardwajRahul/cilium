@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/cilium/cilium/pkg/container/set"
 	"github.com/cilium/cilium/pkg/container/versioned"
 	"github.com/cilium/cilium/pkg/identity"
-	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
@@ -33,127 +33,10 @@ func egressL3OnlyKey(identity identity.NumericIdentity) Key {
 	return EgressKey().WithIdentity(identity)
 }
 
-func Test_IsSuperSetOf(t *testing.T) {
-	tests := []struct {
-		superSet Key
-		subSet   Key
-		res      int
-	}{
-		{ingressKey(0, 0, 0, 0), ingressKey(0, 0, 0, 0), 0},
-		{ingressKey(0, 0, 0, 0), ingressKey(42, 6, 0, 0), 1},
-		{ingressKey(0, 0, 0, 0), ingressKey(42, 6, 80, 0), 1},
-		{ingressKey(0, 0, 0, 0), ingressKey(42, 0, 0, 0), 1},
-		{ingressKey(0, 6, 0, 0), ingressKey(42, 6, 0, 0), 3}, // port is the same
-		{ingressKey(0, 6, 0, 0), ingressKey(42, 6, 80, 0), 2},
-		{ingressKey(0, 6, 64, 10), ingressKey(42, 6, 80, 0), 2}, // port range 64-127,80
-		{ingressKey(0, 6, 80, 0), ingressKey(42, 6, 80, 0), 3},
-		{ingressKey(0, 6, 64, 10), ingressKey(42, 6, 64, 10), 3},  // port ranges are the same
-		{ingressKey(0, 6, 80, 0), ingressKey(42, 17, 80, 0), 0},   // proto is different
-		{ingressKey(2, 6, 80, 0), ingressKey(42, 6, 80, 0), 0},    // id is different
-		{ingressKey(0, 6, 8080, 0), ingressKey(42, 6, 80, 0), 0},  // port is different
-		{ingressKey(0, 6, 64, 10), ingressKey(42, 6, 8080, 0), 0}, // port range is different from port
-		{ingressKey(42, 0, 0, 0), ingressKey(42, 0, 0, 0), 0},     // same key
-		{ingressKey(42, 0, 0, 0), ingressKey(42, 6, 0, 0), 4},
-		{ingressKey(42, 0, 0, 0), ingressKey(42, 6, 80, 0), 4},
-		{ingressKey(42, 0, 64, 10), ingressKey(42, 6, 80, 0), 4}, // port range 64-127,80
-		{ingressKey(42, 0, 0, 0), ingressKey(42, 17, 0, 0), 4},
-		{ingressKey(42, 0, 0, 0), ingressKey(42, 17, 80, 0), 4},
-		{ingressKey(42, 0, 64, 10), ingressKey(42, 17, 80, 0), 4},
-		{ingressKey(42, 6, 0, 0), ingressKey(42, 6, 0, 0), 0}, // same key
-		{ingressKey(42, 6, 0, 0), ingressKey(42, 6, 80, 0), 5},
-		{ingressKey(42, 6, 64, 10), ingressKey(42, 6, 80, 0), 5},
-		{ingressKey(42, 6, 0, 0), ingressKey(42, 6, 8080, 0), 5},
-		{ingressKey(42, 6, 80, 0), ingressKey(42, 6, 80, 0), 0},    // same key
-		{ingressKey(42, 6, 64, 10), ingressKey(42, 6, 64, 10), 0},  // same key
-		{ingressKey(42, 6, 80, 0), ingressKey(42, 6, 8080, 0), 0},  // different port
-		{ingressKey(42, 6, 64, 10), ingressKey(42, 6, 128, 10), 0}, // different port ranges
-		{ingressKey(42, 6, 80, 0), ingressKey(42, 17, 80, 0), 0},   // different proto
-		{ingressKey(42, 6, 80, 0), ingressKey(42, 17, 8080, 0), 0}, // different port and proto
-
-		// increasing specificity for a L3/L4 key
-		{ingressKey(0, 0, 0, 0), ingressKey(42, 6, 80, 0), 1},
-		{ingressKey(0, 0, 64, 10), ingressKey(42, 6, 80, 0), 1},
-		{ingressKey(0, 6, 0, 0), ingressKey(42, 6, 80, 0), 2},
-		{ingressKey(0, 6, 64, 10), ingressKey(42, 6, 80, 0), 2},
-		{ingressKey(0, 6, 80, 0), ingressKey(42, 6, 80, 0), 3},
-		{ingressKey(0, 6, 64, 10), ingressKey(42, 6, 64, 10), 3},
-		{ingressKey(42, 0, 0, 0), ingressKey(42, 6, 80, 0), 4},
-		{ingressKey(42, 0, 64, 10), ingressKey(42, 6, 80, 0), 4},
-		{ingressKey(42, 6, 0, 0), ingressKey(42, 6, 80, 0), 5},
-		{ingressKey(42, 6, 64, 10), ingressKey(42, 6, 80, 0), 5},
-		{ingressKey(42, 6, 80, 0), ingressKey(42, 6, 80, 0), 0},   // same key
-		{ingressKey(42, 6, 64, 10), ingressKey(42, 6, 64, 10), 0}, // same key
-
-		// increasing specificity for a L3-only key
-		{ingressKey(0, 0, 0, 0), ingressKey(42, 0, 0, 0), 1},
-		{ingressKey(0, 0, 64, 10), ingressKey(42, 0, 0, 0), 1},
-		{ingressKey(0, 6, 0, 0), ingressKey(42, 0, 0, 0), 0},      // not a superset
-		{ingressKey(0, 6, 80, 0), ingressKey(42, 0, 0, 0), 0},     // not a superset
-		{ingressKey(0, 6, 64, 10), ingressKey(42, 0, 0, 0), 0},    // not a superset
-		{ingressKey(42, 0, 0, 0), ingressKey(42, 0, 0, 0), 0},     // same key
-		{ingressKey(42, 6, 0, 0), ingressKey(42, 0, 0, 0), 0},     // not a superset
-		{ingressKey(42, 6, 64, 10), ingressKey(42, 0, 64, 10), 0}, // not a superset
-		{ingressKey(42, 6, 80, 0), ingressKey(42, 0, 0, 0), 0},    // not a superset
-		{ingressKey(42, 6, 64, 10), ingressKey(42, 0, 0, 0), 0},   // not a superset
-
-		// increasing specificity for a L3/proto key
-		{ingressKey(0, 0, 0, 0), ingressKey(42, 6, 0, 0), 1}, // wildcard
-		{ingressKey(0, 0, 64, 10), ingressKey(42, 6, 64, 10), 1},
-		{ingressKey(0, 6, 0, 0), ingressKey(42, 6, 0, 0), 3},     // ports are the same
-		{ingressKey(0, 6, 64, 10), ingressKey(42, 6, 64, 10), 3}, // port ranges are the same
-		{ingressKey(0, 6, 80, 0), ingressKey(42, 6, 0, 0), 0},    // not a superset
-		{ingressKey(0, 6, 80, 0), ingressKey(42, 6, 64, 10), 0},  // not a superset
-		{ingressKey(42, 0, 0, 0), ingressKey(42, 6, 0, 0), 4},
-		{ingressKey(42, 0, 64, 10), ingressKey(42, 6, 64, 10), 4},
-		{ingressKey(42, 6, 0, 0), ingressKey(42, 6, 0, 0), 0},     // same key
-		{ingressKey(42, 6, 64, 10), ingressKey(42, 6, 64, 10), 0}, // same key
-		{ingressKey(42, 6, 80, 0), ingressKey(42, 6, 0, 0), 0},    // not a superset
-		{ingressKey(42, 6, 80, 0), ingressKey(42, 6, 64, 10), 0},  // not a superset
-
-		// increasing specificity for a proto-only key
-		{ingressKey(0, 0, 0, 0), ingressKey(0, 6, 0, 0), 1},
-		{ingressKey(0, 0, 64, 10), ingressKey(0, 6, 64, 10), 1},
-		{ingressKey(0, 6, 0, 0), ingressKey(0, 6, 0, 0), 0},      // same key
-		{ingressKey(0, 6, 64, 10), ingressKey(0, 6, 64, 10), 0},  // same key
-		{ingressKey(0, 6, 80, 0), ingressKey(0, 6, 0, 0), 0},     // not a superset
-		{ingressKey(0, 6, 80, 0), ingressKey(0, 6, 64, 10), 0},   // not a superset
-		{ingressKey(42, 0, 0, 0), ingressKey(0, 6, 0, 0), 0},     // not a superset
-		{ingressKey(42, 0, 64, 10), ingressKey(0, 6, 64, 10), 0}, // not a superset
-		{ingressKey(42, 6, 0, 0), ingressKey(0, 6, 0, 0), 0},     // not a superset
-		{ingressKey(42, 6, 64, 10), ingressKey(0, 6, 64, 10), 0}, // not a superset
-		{ingressKey(42, 6, 80, 0), ingressKey(0, 6, 0, 0), 0},    // not a superset
-		{ingressKey(42, 6, 80, 0), ingressKey(0, 6, 64, 10), 0},  // not a superset
-
-		// increasing specificity for a L4-only key
-		{ingressKey(0, 0, 0, 0), ingressKey(0, 6, 80, 0), 1},
-		{ingressKey(0, 0, 64, 10), ingressKey(0, 6, 64, 10), 1},
-		{ingressKey(0, 6, 0, 0), ingressKey(0, 6, 80, 0), 2},
-		{ingressKey(0, 6, 64, 10), ingressKey(0, 6, 80, 0), 2},
-		{ingressKey(0, 6, 80, 0), ingressKey(0, 6, 80, 0), 0},    // same key
-		{ingressKey(0, 6, 64, 10), ingressKey(0, 6, 64, 10), 0},  // same key
-		{ingressKey(42, 0, 0, 0), ingressKey(0, 6, 80, 0), 0},    // not a superset
-		{ingressKey(42, 0, 64, 10), ingressKey(0, 6, 80, 0), 0},  // not a superset
-		{ingressKey(42, 6, 0, 0), ingressKey(0, 6, 80, 0), 0},    // not a superset
-		{ingressKey(42, 6, 64, 10), ingressKey(0, 6, 80, 0), 0},  // not a superset
-		{ingressKey(42, 6, 80, 0), ingressKey(0, 6, 80, 0), 0},   // not a superset
-		{ingressKey(42, 6, 64, 10), ingressKey(0, 6, 64, 10), 0}, // not a superset
-
-	}
-	for i, tt := range tests {
-		assert.Equal(t, tt.res, IsSuperSetOf(tt.superSet, tt.subSet), fmt.Sprintf("IsSuperSetOf failed on round %d", i+1))
-		if tt.res != 0 {
-			assert.Equal(t, 0, IsSuperSetOf(tt.subSet, tt.superSet), fmt.Sprintf("Reverse IsSuperSetOf succeeded on round %d", i+1))
-		}
-	}
-}
-
 // WithOwners replaces owners of 'e' with 'owners'.
 // No owners is represented with a 'nil' map.
 func (e MapStateEntry) WithOwners(owners ...MapStateOwner) MapStateEntry {
-	e.owners = make(map[MapStateOwner]struct{}, len(owners))
-	for _, cs := range owners {
-		e.owners[cs] = struct{}{}
-	}
+	e.owners = set.NewSet[MapStateOwner](owners...)
 	return e
 }
 
@@ -174,7 +57,7 @@ func (e MapStateEntry) WithDefaultAuthType(authType AuthType) MapStateEntry {
 // WithoutOwners empties the 'owners' of 'e'.
 // Note: This is used only in unit tests and helps test readability.
 func (e MapStateEntry) WithoutOwners() MapStateEntry {
-	e.owners = make(map[MapStateOwner]struct{})
+	e.owners.Clear()
 	return e
 }
 
@@ -192,10 +75,10 @@ func (e MapStateEntry) WithDependents(keys ...Key) MapStateEntry {
 func TestPolicyKeyTrafficDirection(t *testing.T) {
 	k := IngressKey()
 	require.True(t, k.IsIngress())
-	require.Equal(t, false, k.IsEgress())
+	require.False(t, k.IsEgress())
 
 	k = EgressKey()
-	require.Equal(t, false, k.IsIngress())
+	require.False(t, k.IsIngress())
 	require.True(t, k.IsEgress())
 }
 
@@ -1362,6 +1245,113 @@ func TestMapState_denyPreferredInsertWithChanges(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "test-15a - L3 port-range allow KV should not overwrite a wildcard deny entry",
+			ms: testMapState(MapStateMap{
+				ingressKey(0, 3, 80, 0): {
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           true,
+				},
+			}),
+			args: args{
+				key: ingressKey(1, 3, 64, 10), // port range 64-127 (64/10)
+				entry: MapStateEntry{
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           false,
+				},
+			},
+			want: testMapState(MapStateMap{
+				ingressKey(1, 3, 64, 10): { // port range 64-127 (64/10)
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           false,
+				},
+				ingressKey(0, 3, 80, 0): {
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           true,
+				},
+			}),
+			wantAdds: Keys{
+				ingressKey(1, 3, 64, 10): struct{}{},
+			},
+			wantDeletes: Keys{},
+			wantOld:     MapStateMap{},
+		},
+		{
+			name: "test-15b-reverse - L3 port-range allow KV should not overwrite a wildcard deny entry",
+			ms: testMapState(MapStateMap{
+				ingressKey(1, 3, 64, 10): { // port range 64-127 (64/10)
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           false,
+				},
+			}),
+			args: args{
+				key: ingressKey(0, 3, 80, 0),
+				entry: MapStateEntry{
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           true,
+				},
+			},
+			want: testMapState(MapStateMap{
+				ingressKey(1, 3, 64, 10): { // port range 64-127 (64/10)
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           false,
+				},
+				ingressKey(0, 3, 80, 0): {
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           true,
+				},
+			}),
+			wantAdds: Keys{
+				ingressKey(0, 3, 80, 16): struct{}{},
+			},
+			wantDeletes: Keys{},
+			wantOld:     MapStateMap{},
+		},
+		{
+			name: "test-16a - No added entry for L3 port-range allow + wildcard allow entry",
+			ms: testMapState(MapStateMap{
+				ingressKey(0, 3, 80, 0): {
+					ProxyPort:        8080,
+					priority:         8080,
+					DerivedFromRules: nil,
+					IsDeny:           false,
+				},
+			}),
+			args: args{
+				key: ingressKey(1, 3, 64, 10), // port range 64-127 (64/10)
+				entry: MapStateEntry{
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           false,
+				},
+			},
+			want: testMapState(MapStateMap{
+				ingressKey(0, 3, 80, 0): {
+					ProxyPort:        8080,
+					priority:         8080,
+					DerivedFromRules: nil,
+					IsDeny:           false,
+				},
+				ingressKey(1, 3, 64, 10): { // port range 64-127 (64/10)
+					ProxyPort:        0,
+					DerivedFromRules: nil,
+					IsDeny:           false,
+				},
+			}),
+			wantAdds: Keys{
+				ingressKey(1, 3, 64, 10): struct{}{},
+			},
+			wantDeletes: Keys{},
+			wantOld:     MapStateMap{},
+		},
 	}
 	for _, tt := range tests {
 		changes := ChangeState{
@@ -1426,29 +1416,14 @@ func denyEntry(proxyPort uint16, owners ...MapStateOwner) MapStateEntry {
 }
 
 func testEntry(proxyPort uint16, deny bool, authType AuthType, owners ...MapStateOwner) MapStateEntry {
-	listener := ""
-	entry := MapStateEntry{
+	return MapStateEntry{
 		ProxyPort: proxyPort,
 		priority:  proxyPort,
-		Listener:  listener,
+		Listener:  "",
 		AuthType:  authType,
 		IsDeny:    deny,
+		owners:    set.NewSet(owners...),
 	}
-	entry.owners = make(map[MapStateOwner]struct{}, len(owners))
-	for _, owner := range owners {
-		entry.owners[owner] = struct{}{}
-	}
-	return entry
-}
-
-func allowEntryD(proxyPort uint16, derivedFrom labels.LabelArrayList, owners ...MapStateOwner) MapStateEntry {
-	return testEntryD(proxyPort, false, AuthTypeDisabled, derivedFrom, owners...)
-}
-
-func testEntryD(proxyPort uint16, deny bool, authType AuthType, derivedFrom labels.LabelArrayList, owners ...MapStateOwner) MapStateEntry {
-	entry := testEntry(proxyPort, deny, authType, owners...)
-	entry.DerivedFromRules = derivedFrom
-	return entry
 }
 
 func TestMapState_AccumulateMapChangesDeny(t *testing.T) {
@@ -1573,7 +1548,7 @@ func TestMapState_AccumulateMapChangesDeny(t *testing.T) {
 		deletes: Keys{},
 	}, {
 		continued: true,
-		name:      "test-2b - Adding Bar also selecting 42",
+		name:      "test-2b - Adding Bar also selecting 42 (and 44)",
 		args: []args{
 			{cs: csBar, adds: []int{42, 44}, deletes: []int{}, port: 80, proto: 6, ingress: true, redirect: false, deny: true},
 		},
@@ -1832,6 +1807,92 @@ func TestMapState_AccumulateMapChangesDeny(t *testing.T) {
 	}
 }
 
+func TestMapStateEntry(t *testing.T) {
+	csFoo := newTestCachedSelector("Foo", false)
+	csBar := newTestCachedSelector("Bar", false)
+	csWildcard := newTestCachedSelector("wildcard", true)
+
+	entry := allowEntry(0, csFoo, csBar)
+	require.True(t, entry.owners.Has(csFoo))
+	require.True(t, entry.owners.Has(csBar))
+	require.False(t, entry.owners.Has(csWildcard))
+
+	entry.owners.Insert(csWildcard)
+	require.True(t, entry.owners.Has(csFoo))
+	require.True(t, entry.owners.Has(csBar))
+	require.True(t, entry.owners.Has(csWildcard))
+
+	entry.owners.Remove(csBar)
+	require.True(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.True(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 2, entry.owners.Len())
+
+	entry.owners.Remove(csFoo)
+	require.False(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.True(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 1, entry.owners.Len())
+
+	entry.owners.Remove(csWildcard)
+	require.False(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.False(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 0, entry.owners.Len())
+
+	require.Equal(t, set.NewSet[MapStateOwner](), entry.owners)
+
+	entry = allowEntry(0, csFoo)
+	require.False(t, entry.owners.Has(nil))
+	require.True(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.False(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 1, entry.owners.Len())
+
+	entry.owners.Insert(nil)
+	require.True(t, entry.owners.Has(nil))
+	require.True(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.False(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 2, entry.owners.Len())
+
+	entry.owners.Insert(csWildcard)
+	require.True(t, entry.owners.Has(nil))
+	require.True(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.True(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 3, entry.owners.Len())
+
+	entry.owners.Remove(csBar) // does not exist
+	require.True(t, entry.owners.Has(nil))
+	require.True(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.True(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 3, entry.owners.Len())
+
+	entry.owners.Remove(csFoo)
+	require.True(t, entry.owners.Has(nil))
+	require.False(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.True(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 2, entry.owners.Len())
+
+	entry.owners.Remove(csWildcard)
+	require.True(t, entry.owners.Has(nil))
+	require.False(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.False(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 1, entry.owners.Len())
+
+	entry.owners.Remove(nil)
+	require.False(t, entry.owners.Has(nil))
+	require.False(t, entry.owners.Has(csFoo))
+	require.False(t, entry.owners.Has(csBar))
+	require.False(t, entry.owners.Has(csWildcard))
+	require.Equal(t, 0, entry.owners.Len())
+	require.Equal(t, set.NewSet[MapStateOwner](), entry.owners)
+}
+
 func TestMapState_AccumulateMapChanges(t *testing.T) {
 	csFoo := newTestCachedSelector("Foo", false)
 	csBar := newTestCachedSelector("Bar", false)
@@ -1882,7 +1943,7 @@ func TestMapState_AccumulateMapChanges(t *testing.T) {
 		continued: true,
 		name:      "test-2b - Adding Bar also selecting 42",
 		args: []args{
-			{cs: csBar, adds: []int{42, 44}, deletes: []int{50}, port: 80, proto: 6, ingress: true, redirect: false, deny: false},
+			{cs: csBar, adds: []int{42, 44}, deletes: []int{}, port: 80, proto: 6, ingress: true, redirect: false, deny: false},
 		},
 		state: testMapState(MapStateMap{
 			HttpIngressKey(42): allowEntry(0, csFoo, csBar),
@@ -2017,17 +2078,17 @@ func TestMapState_AccumulateMapChanges(t *testing.T) {
 		name:      "test-5a - auth type propagation from the most specific superset",
 		args: []args{
 			{cs: csFoo, adds: []int{43}, hasAuth: ExplicitAuthType, authType: AuthTypeAlwaysFail},
-			{cs: csFoo, adds: []int{43}, proto: 6, hasAuth: ExplicitAuthType, authType: AuthTypeSpire},
+			{cs: csFoo, adds: []int{0}, proto: 6, hasAuth: ExplicitAuthType, authType: AuthTypeSpire},
 			{cs: csBar, adds: []int{43}, port: 80, proto: 6, redirect: true},
 		},
 		state: testMapState(MapStateMap{
 			egressKey(43, 0, 0, 0):  allowEntry(0, csFoo).WithAuthType(AuthTypeAlwaysFail),
-			egressKey(43, 6, 0, 0):  allowEntry(0, csFoo).WithAuthType(AuthTypeSpire),
+			egressKey(0, 6, 0, 0):   allowEntry(0, csFoo).WithAuthType(AuthTypeSpire),
 			egressKey(43, 6, 80, 0): allowEntry(1, csBar).WithDefaultAuthType(AuthTypeSpire),
 		}),
 		adds: Keys{
 			egressKey(43, 0, 0, 0):  {},
-			egressKey(43, 6, 0, 0):  {},
+			egressKey(0, 6, 0, 0):   {},
 			egressKey(43, 6, 80, 0): {},
 		},
 		deletes: Keys{},
@@ -2036,17 +2097,17 @@ func TestMapState_AccumulateMapChanges(t *testing.T) {
 		name:      "test-5b - auth type propagation from the most specific superset - reverse",
 		args: []args{
 			{cs: csBar, adds: []int{43}, port: 80, proto: 6, redirect: true},
-			{cs: csFoo, adds: []int{43}, proto: 6, hasAuth: ExplicitAuthType, authType: AuthTypeSpire},
+			{cs: csFoo, adds: []int{0}, proto: 6, hasAuth: ExplicitAuthType, authType: AuthTypeSpire},
 			{cs: csFoo, adds: []int{43}, hasAuth: ExplicitAuthType, authType: AuthTypeAlwaysFail},
 		},
 		state: testMapState(MapStateMap{
 			egressKey(43, 0, 0, 0):  allowEntry(0, csFoo).WithAuthType(AuthTypeAlwaysFail),
-			egressKey(43, 6, 0, 0):  allowEntry(0, csFoo).WithAuthType(AuthTypeSpire),
+			egressKey(0, 6, 0, 0):   allowEntry(0, csFoo).WithAuthType(AuthTypeSpire),
 			egressKey(43, 6, 80, 0): allowEntry(1, csBar).WithDefaultAuthType(AuthTypeSpire),
 		}),
 		adds: Keys{
 			egressKey(43, 0, 0, 0):  {},
-			egressKey(43, 6, 0, 0):  {},
+			egressKey(0, 6, 0, 0):   {},
 			egressKey(43, 6, 80, 0): {},
 		},
 		deletes: Keys{},
@@ -2184,606 +2245,6 @@ func TestMapState_AccumulateMapChanges(t *testing.T) {
 	}
 }
 
-var testLabels = labels.LabelArray{
-	labels.NewLabel("test", "ing", labels.LabelSourceReserved),
-}
-
-func TestMapState_AddVisibilityKeys(t *testing.T) {
-	csFoo := newTestCachedSelector("Foo", false)
-	csBar := newTestCachedSelector("Bar", false)
-
-	testMapState := func(initMap MapStateMap) *mapState {
-		return newMapState().withState(initMap)
-	}
-
-	type args struct {
-		redirectPort uint16
-		visMeta      VisibilityMetadata
-	}
-	tests := []struct {
-		name     string
-		ms, want *mapState
-		args     args
-	}{
-		{
-			name: "test-1 - Add HTTP ingress visibility - allow-all",
-			ms: testMapState(MapStateMap{
-				AnyIngressKey(): allowEntry(0),
-			}),
-			args: args{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			want: testMapState(MapStateMap{
-				AnyIngressKey():   allowEntry(0),
-				HttpIngressKey(0): allowEntryD(12345, visibilityDerivedFrom, nil),
-			}),
-		},
-		{
-			name: "test-2 - Add HTTP ingress visibility - no allow-all",
-			ms:   newMapState(),
-			args: args{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			want: newMapState(),
-		},
-		{
-			name: "test-3 - Add HTTP ingress visibility - L4-allow",
-			ms: testMapState(MapStateMap{
-				HttpIngressKey(0): allowEntryD(0, labels.LabelArrayList{testLabels}),
-			}),
-			args: args{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			want: testMapState(MapStateMap{
-				HttpIngressKey(0): allowEntryD(12345, labels.LabelArrayList{visibilityDerivedFromLabels, testLabels}, nil),
-			}),
-		},
-		{
-			name: "test-4 - Add HTTP ingress visibility - L3/L4-allow",
-			ms: testMapState(MapStateMap{
-				HttpIngressKey(123): allowEntryD(0, labels.LabelArrayList{testLabels}, csBar),
-			}),
-			args: args{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			want: testMapState(MapStateMap{
-				HttpIngressKey(123): allowEntryD(12345, labels.LabelArrayList{visibilityDerivedFromLabels, testLabels}, csBar),
-			}),
-		},
-		{
-			name: "test-5 - Add HTTP ingress visibility - L3-allow (host)",
-			ms: testMapState(MapStateMap{
-				HostIngressKey(): allowEntry(0),
-			}),
-			args: args{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			want: testMapState(MapStateMap{
-				HostIngressKey():  allowEntry(0).WithDependents(HttpIngressKey(1)),
-				HttpIngressKey(1): allowEntryD(12345, labels.LabelArrayList{visibilityDerivedFromLabels}).WithOwners(HostIngressKey()),
-			}),
-		},
-		{
-			name: "test-6 - Add HTTP ingress visibility - L3/L4-allow on different port",
-			ms: testMapState(MapStateMap{
-				IngressKey().WithIdentity(123).WithTCPPort(88): allowEntryD(0, labels.LabelArrayList{testLabels}, csBar),
-			}),
-			args: args{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			want: testMapState(MapStateMap{
-				IngressKey().WithIdentity(123).WithTCPPort(88): allowEntryD(0, labels.LabelArrayList{testLabels}, csBar),
-			}),
-		},
-		{
-			name: "test-7 - Add HTTP ingress visibility - allow-all + L4-deny (no change)",
-			ms: testMapState(MapStateMap{
-				AnyIngressKey():   allowEntry(0),
-				HttpIngressKey(0): denyEntry(0),
-			}),
-			args: args{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			want: testMapState(MapStateMap{
-				AnyIngressKey():   allowEntry(0),
-				HttpIngressKey(0): denyEntry(0),
-			}),
-		},
-		{
-			name: "test-8 - Add HTTP ingress visibility - allow-all + L3-deny",
-			ms: testMapState(MapStateMap{
-				AnyIngressKey():       allowEntry(0),
-				ingressL3OnlyKey(234): denyEntry(0, csFoo),
-			}),
-			args: args{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			want: testMapState(MapStateMap{
-				AnyIngressKey():       allowEntry(0),
-				ingressL3OnlyKey(234): denyEntry(0, csFoo).WithDependents(HttpIngressKey(234)),
-				HttpIngressKey(0):     allowEntryD(12345, visibilityDerivedFrom, nil),
-				HttpIngressKey(234):   denyEntry(0, csFoo).WithOwners(ingressL3OnlyKey(234)),
-			}),
-		},
-		{
-			name: "test-9 - Add HTTP ingress visibility - allow-all + L3/L4-deny",
-			ms: testMapState(MapStateMap{
-				AnyIngressKey():     allowEntry(0),
-				HttpIngressKey(132): denyEntry(0, csBar),
-			}),
-			args: args{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			want: testMapState(MapStateMap{
-				AnyIngressKey():     allowEntry(0),
-				HttpIngressKey(132): denyEntry(0, csBar),
-				HttpIngressKey(0):   allowEntryD(12345, visibilityDerivedFrom, nil),
-			}),
-		},
-		{
-			name: "test-10 - Add HTTP egress visibility",
-			ms: testMapState(MapStateMap{
-				AnyEgressKey(): allowEntry(0),
-			}),
-			args: args{
-				redirectPort: 12346,
-				visMeta:      VisibilityMetadata{Ingress: false, Port: 80, Proto: u8proto.TCP},
-			},
-			want: testMapState(MapStateMap{
-				AnyEgressKey():   allowEntry(0),
-				HttpEgressKey(0): allowEntryD(12346, visibilityDerivedFrom, nil),
-			}),
-		},
-	}
-	for _, tt := range tests {
-		old := ChangeState{
-			Old: make(MapStateMap),
-		}
-		tt.ms.ForEach(func(k Key, v MapStateEntry) bool {
-			old.insertOldIfNotExists(k, v)
-			return true
-		})
-		changes := ChangeState{
-			Adds: make(Keys),
-			Old:  make(MapStateMap),
-		}
-		tt.ms.addVisibilityKeys(DummyOwner{}, tt.args.redirectPort, &tt.args.visMeta, changes)
-		tt.ms.validatePortProto(t)
-		require.True(t, tt.ms.Equals(tt.want), "%s:\n%s", tt.name, tt.ms.Diff(tt.want))
-		// Find new and updated entries
-		wantAdds := make(Keys)
-		wantOld := make(MapStateMap)
-
-		for k, v := range old.Old {
-			if _, ok := tt.ms.Get(k); !ok {
-				wantOld[k] = v
-			}
-		}
-		tt.ms.ForEach(func(k Key, v MapStateEntry) bool {
-			if v2, ok := old.Old[k]; ok {
-				if !assert.ObjectsAreEqual(v2, v) {
-					if !v.DatapathEqual(&v2) {
-						wantAdds[k] = struct{}{}
-					}
-					wantOld[k] = v2
-				}
-			} else {
-				wantAdds[k] = struct{}{}
-			}
-			return true
-		})
-		require.EqualValues(t, wantAdds, changes.Adds, tt.name)
-		require.EqualValues(t, wantOld, changes.Old, tt.name)
-	}
-}
-
-func TestMapState_AccumulateMapChangesOnVisibilityKeys(t *testing.T) {
-	csFoo := newTestCachedSelector("Foo", false)
-	csBar := newTestCachedSelector("Bar", false)
-
-	identityCache := identity.IdentityMap{
-		identity.NumericIdentity(identityFoo): labelsFoo,
-	}
-	selectorCache := testNewSelectorCache(identityCache)
-	testMapState := func(initMap MapStateMap) *mapState {
-		return newMapState().withState(initMap)
-	}
-
-	type args struct {
-		cs       *testCachedSelector
-		adds     []int
-		deletes  []int
-		port     uint16
-		proto    u8proto.U8proto
-		ingress  bool
-		redirect bool
-		deny     bool
-	}
-	type visArgs struct {
-		redirectPort uint16
-		visMeta      VisibilityMetadata
-	}
-	tests := []struct {
-		continued bool // Start from the end state of the previous test
-		name      string
-		setup     *mapState
-		visArgs   []visArgs
-		visAdds   Keys
-		visOld    MapStateMap
-		args      []args // changes applied, in order
-		state     MapState
-		adds      Keys
-		deletes   Keys
-	}{{
-		name: "test-1a - Adding identity to deny with visibilty",
-		setup: testMapState(MapStateMap{
-			AnyIngressKey():       allowEntry(0),
-			ingressL3OnlyKey(234): denyEntry(0, csFoo),
-		}),
-		visArgs: []visArgs{{
-			redirectPort: 12345,
-			visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: true, Port: 80, Proto: u8proto.TCP},
-		}},
-		visAdds: Keys{
-			HttpIngressKey(0):   {},
-			HttpIngressKey(234): {},
-		},
-		visOld: MapStateMap{
-			ingressL3OnlyKey(234): denyEntry(0, csFoo),
-		},
-		args: []args{
-			{cs: csFoo, adds: []int{235}, deletes: []int{}, port: 0, proto: 0, ingress: true, redirect: false, deny: true},
-		},
-		state: testMapState(MapStateMap{
-			AnyIngressKey():       allowEntry(0),
-			ingressL3OnlyKey(234): denyEntry(0, csFoo).WithDependents(HttpIngressKey(234)),
-			ingressL3OnlyKey(235): denyEntry(0, csFoo).WithDependents(HttpIngressKey(235)),
-			HttpIngressKey(0):     allowEntryD(12345, visibilityDerivedFrom, nil),
-			HttpIngressKey(234):   denyEntry(0).WithOwners(ingressL3OnlyKey(234)),
-			HttpIngressKey(235):   denyEntry(0).WithOwners(ingressL3OnlyKey(235)),
-		}),
-		adds: Keys{
-			ingressL3OnlyKey(235): {},
-			HttpIngressKey(235):   {},
-		},
-		deletes: Keys{},
-	}, {
-		continued: true,
-		name:      "test-1b - Removing the sole key",
-		args: []args{
-			{cs: csFoo, adds: nil, deletes: []int{235}, port: 0, proto: 0, ingress: true, redirect: false, deny: true},
-		},
-		state: testMapState(MapStateMap{
-			AnyIngressKey():       allowEntry(0),
-			ingressL3OnlyKey(234): denyEntry(0, csFoo).WithDependents(HttpIngressKey(234)),
-			HttpIngressKey(0):     allowEntryD(12345, visibilityDerivedFrom, nil),
-			HttpIngressKey(234):   denyEntry(0).WithOwners(ingressL3OnlyKey(234)),
-		}),
-		adds: Keys{},
-		deletes: Keys{
-			ingressL3OnlyKey(235): {},
-			HttpIngressKey(235):   {},
-		},
-	}, {
-		name: "test-2a - Adding 2 identities, and deleting a nonexisting key on an empty state",
-		args: []args{
-			{cs: csFoo, adds: []int{235, 236}, deletes: []int{50}, port: 0, proto: 0, ingress: true, redirect: false, deny: false},
-		},
-		visArgs: []visArgs{{
-			redirectPort: 12345,
-			visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: true, Port: 80, Proto: u8proto.TCP},
-		}},
-		state: testMapState(MapStateMap{
-			ingressL3OnlyKey(235): allowEntry(0, csFoo).WithDependents(HttpIngressKey(235)),
-			ingressL3OnlyKey(236): allowEntry(0, csFoo).WithDependents(HttpIngressKey(236)),
-			HttpIngressKey(235):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(235)),
-			HttpIngressKey(236):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(236)),
-		}),
-		adds: Keys{
-			ingressL3OnlyKey(235): {},
-			HttpIngressKey(235):   {},
-			ingressL3OnlyKey(236): {},
-			HttpIngressKey(236):   {},
-		},
-		deletes: Keys{
-			ingressL3OnlyKey(235): {}, // changed dependents
-			ingressL3OnlyKey(236): {}, // changed dependents
-		},
-	}, {
-		continued: true,
-		name:      "test-2b - Adding Bar also selecting 235",
-		args: []args{
-			{cs: csBar, adds: []int{235, 237}, deletes: []int{50}, port: 0, proto: 0, ingress: true, redirect: false, deny: false},
-		},
-		visArgs: []visArgs{{
-			redirectPort: 12345,
-			visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: true, Port: 80, Proto: u8proto.TCP},
-		}},
-		state: testMapState(MapStateMap{
-			ingressL3OnlyKey(235): allowEntry(0, csFoo, csBar).WithDependents(HttpIngressKey(235)),
-			ingressL3OnlyKey(236): allowEntry(0, csFoo).WithDependents(HttpIngressKey(236)),
-			HttpIngressKey(235):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(235)),
-			HttpIngressKey(236):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(236)),
-			ingressL3OnlyKey(237): allowEntry(0, csBar).WithDependents(HttpIngressKey(237)),
-			HttpIngressKey(237):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(237)),
-		}),
-		adds: Keys{
-			ingressL3OnlyKey(237): {},
-			HttpIngressKey(237):   {},
-		},
-		deletes: Keys{
-			ingressL3OnlyKey(237): {}, // changed dependents
-		},
-	}, {
-		continued: true,
-		name:      "test-2c - Deleting 235 from Foo, remains on Bar and no deletes",
-		args: []args{
-			{cs: csFoo, adds: []int{}, deletes: []int{235}, port: 0, proto: 0, ingress: true, redirect: false, deny: true},
-		},
-		visArgs: []visArgs{{
-			redirectPort: 12345,
-			visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: true, Port: 80, Proto: u8proto.TCP},
-		}},
-		state: testMapState(MapStateMap{
-			ingressL3OnlyKey(235): allowEntry(0, csBar).WithDependents(HttpIngressKey(235)),
-			ingressL3OnlyKey(236): allowEntry(0, csFoo).WithDependents(HttpIngressKey(236)),
-			HttpIngressKey(235):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(235)),
-			HttpIngressKey(236):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(236)),
-			ingressL3OnlyKey(237): allowEntry(0, csBar).WithDependents(HttpIngressKey(237)),
-			HttpIngressKey(237):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(237)),
-		}),
-		adds:    Keys{},
-		deletes: Keys{},
-	}, {
-		continued: true,
-		name:      "test-2d - Deleting 235 from Foo again, not deleted",
-		args: []args{
-			{cs: csFoo, adds: []int{}, deletes: []int{235}, port: 0, proto: 0, ingress: true, redirect: false, deny: true},
-		},
-		visArgs: []visArgs{{
-			redirectPort: 12345,
-			visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: true, Port: 80, Proto: u8proto.TCP},
-		}},
-		state: testMapState(MapStateMap{
-			ingressL3OnlyKey(235): allowEntry(0, csBar).WithDependents(HttpIngressKey(235)),
-			ingressL3OnlyKey(236): allowEntry(0, csFoo).WithDependents(HttpIngressKey(236)),
-			HttpIngressKey(235):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(235)),
-			HttpIngressKey(236):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(236)),
-			ingressL3OnlyKey(237): allowEntry(0, csBar).WithDependents(HttpIngressKey(237)),
-			HttpIngressKey(237):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(237)),
-		}),
-		adds:    Keys{},
-		deletes: Keys{},
-	}, {
-		continued: true,
-		name:      "test-2e - Deleting 235 from Bar, deleted",
-		args: []args{
-			{cs: csBar, adds: []int{}, deletes: []int{235}, port: 0, proto: 0, ingress: true, redirect: false, deny: true},
-		},
-		visArgs: []visArgs{{
-			redirectPort: 12345,
-			visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: true, Port: 80, Proto: u8proto.TCP},
-		}},
-		state: testMapState(MapStateMap{
-			ingressL3OnlyKey(236): allowEntry(0, csFoo).WithDependents(HttpIngressKey(236)),
-			HttpIngressKey(236):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(236)),
-			ingressL3OnlyKey(237): allowEntry(0, csBar).WithDependents(HttpIngressKey(237)),
-			HttpIngressKey(237):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(237)),
-		}),
-		adds: Keys{},
-		deletes: Keys{
-			ingressL3OnlyKey(235): {},
-			HttpIngressKey(235):   {},
-		},
-	}, {
-		continued: true,
-		name:      "test-2f - Adding an entry that already exists, no adds",
-		args: []args{
-			{cs: csBar, adds: []int{237}, deletes: []int{}, port: 0, proto: 0, ingress: true, redirect: false, deny: false},
-		},
-		visArgs: []visArgs{{
-			redirectPort: 12345,
-			visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: true, Port: 80, Proto: u8proto.TCP},
-		}},
-		state: testMapState(MapStateMap{
-			ingressL3OnlyKey(236): allowEntry(0, csFoo).WithDependents(HttpIngressKey(236)),
-			HttpIngressKey(236):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(236)),
-			ingressL3OnlyKey(237): allowEntry(0, csBar).WithDependents(HttpIngressKey(237)),
-			HttpIngressKey(237):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(ingressL3OnlyKey(237)),
-		}),
-		adds:    Keys{},
-		deletes: Keys{},
-	}, {
-		continued: false,
-		name:      "test-3a - egress HTTP proxy (setup)",
-		setup: testMapState(MapStateMap{
-			AnyIngressKey():  allowEntry(0),
-			HostIngressKey(): allowEntry(0),
-			HttpEgressKey(0): allowEntry(0),
-		}),
-		visArgs: []visArgs{
-			{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			{
-				redirectPort: 12346,
-				visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: false, Port: 80, Proto: u8proto.TCP},
-			},
-			{
-				redirectPort: 12347,
-				visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: false, Port: 53, Proto: u8proto.UDP},
-			},
-		},
-		visAdds: Keys{
-			HttpIngressKey(0): {},
-			HttpEgressKey(0):  {},
-		},
-		visOld: MapStateMap{
-			// Old value for the modified entry
-			HttpEgressKey(0): allowEntry(0),
-		},
-		args: []args{
-			{cs: csBar, adds: []int{42}, deletes: []int{}, port: 53, proto: 17, ingress: false, redirect: false, deny: false},
-			{cs: csBar, adds: []int{42}, deletes: []int{}, port: 53, proto: 6, ingress: false, redirect: false, deny: false},
-		},
-		state: testMapState(MapStateMap{
-			AnyIngressKey():  allowEntry(0),
-			HostIngressKey(): allowEntry(0),
-			// Entry added solely due to visibility annotation has a 'nil' owner
-			HttpIngressKey(0): allowEntryD(12345, visibilityDerivedFrom).WithOwners(nil),
-			// Entries modified due to visibility annotation keep their existing owners (here none)
-			HttpEgressKey(0):    allowEntryD(12346, visibilityDerivedFrom, nil),
-			DNSUDPEgressKey(42): allowEntryD(12347, visibilityDerivedFrom, csBar),
-			DNSTCPEgressKey(42): allowEntry(0, csBar),
-		}),
-		adds: Keys{
-			DNSUDPEgressKey(42): {},
-			DNSTCPEgressKey(42): {},
-		},
-		deletes: Keys{},
-	}, {
-		continued: true,
-		name:      "test-3b - egress HTTP proxy (incremental update)",
-		args: []args{
-			{cs: csFoo, adds: []int{43}, deletes: []int{}, port: 80, proto: 6, ingress: false, redirect: true, deny: false},
-		},
-		visArgs: []visArgs{
-			{
-				redirectPort: 12345,
-				visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: true, Port: 80, Proto: u8proto.TCP},
-			},
-			{
-				redirectPort: 12346,
-				visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: false, Port: 80, Proto: u8proto.TCP},
-			},
-			{
-				redirectPort: 12347,
-				visMeta:      VisibilityMetadata{Parser: ParserTypeHTTP, Ingress: false, Port: 53, Proto: u8proto.UDP},
-			},
-		},
-		state: testMapState(MapStateMap{
-			AnyIngressKey():     allowEntry(0),
-			HostIngressKey():    allowEntry(0),
-			HttpIngressKey(0):   allowEntryD(12345, visibilityDerivedFrom).WithOwners(nil),
-			HttpEgressKey(0):    allowEntryD(12346, visibilityDerivedFrom, nil),
-			DNSUDPEgressKey(42): allowEntryD(12347, visibilityDerivedFrom, csBar),
-			DNSTCPEgressKey(42): allowEntry(0, csBar),
-			// Redirect entries are not modified by visibility annotations
-			HttpEgressKey(43): allowEntry(1, csFoo),
-		}),
-		adds: Keys{
-			HttpEgressKey(43): {},
-		},
-		deletes: Keys{},
-	}, {
-		continued: false,
-		name:      "test-n - title",
-		args:      []args{
-			//{cs: csFoo, adds: []int{42, 43}, deletes: []int{50}, port: 80, proto: 6, ingress: true, redirect: false, deny: false},
-		},
-		state: newMapState(),
-		adds:  Keys{
-			//HttpIngressKey(42): {},
-		},
-		deletes: Keys{
-			//HttpIngressKey(43): {},
-		},
-	},
-	}
-
-	epPolicy := &EndpointPolicy{
-		selectorPolicy: &selectorPolicy{
-			SelectorCache: selectorCache,
-		},
-		PolicyOwner: DummyOwner{},
-	}
-	policyMapState := newMapState()
-
-	for _, tt := range tests {
-		// Allow omit empty maps
-		if tt.visAdds == nil {
-			tt.visAdds = make(Keys)
-		}
-		if tt.visOld == nil {
-			tt.visOld = make(MapStateMap)
-		}
-		if tt.adds == nil {
-			tt.adds = make(Keys)
-		}
-		if tt.deletes == nil {
-			tt.deletes = make(Keys)
-		}
-		policyMaps := MapChanges{}
-		if !tt.continued {
-			if tt.setup != nil {
-				policyMapState = tt.setup
-			} else {
-				policyMapState = newMapState()
-			}
-		}
-		epPolicy.policyMapState = policyMapState
-
-		changes := ChangeState{
-			Adds:    make(Keys),
-			Deletes: make(Keys),
-			Old:     make(MapStateMap),
-		}
-		for _, arg := range tt.visArgs {
-			policyMapState.addVisibilityKeys(DummyOwner{}, arg.redirectPort, &arg.visMeta, changes)
-		}
-		require.EqualValues(t, tt.visAdds, changes.Adds, tt.name+" (visAdds)")
-		require.EqualValues(t, tt.visOld, changes.Old, tt.name+" (visOld)")
-
-		for _, x := range tt.args {
-			dir := trafficdirection.Egress
-			if x.ingress {
-				dir = trafficdirection.Ingress
-			}
-			adds := x.cs.addSelections(x.adds...)
-			deletes := x.cs.deleteSelections(x.deletes...)
-			var cs CachedSelector
-			if x.cs != nil {
-				cs = x.cs
-			}
-			key := KeyForDirection(dir).WithPortProto(x.proto, x.port)
-			var proxyPort uint16
-			if x.redirect {
-				proxyPort = 1
-			}
-			value := NewMapStateEntry(cs, nil, proxyPort, "", 0, x.deny, DefaultAuthType, AuthTypeDisabled)
-			policyMaps.AccumulateMapChanges(cs, adds, deletes, []Key{key}, value)
-		}
-		policyMaps.SyncMapChanges(versioned.LatestTx)
-		handle, changes := policyMaps.consumeMapChanges(epPolicy, denyRules)
-		if handle != nil {
-			handle.Close()
-		}
-		changes.Old = make(MapStateMap)
-
-		// Visibilty redirects need to be re-applied after consumeMapChanges()
-		for _, arg := range tt.visArgs {
-			policyMapState.addVisibilityKeys(DummyOwner{}, arg.redirectPort, &arg.visMeta, changes)
-		}
-		for k := range changes.Old {
-			changes.Deletes[k] = struct{}{}
-		}
-		policyMapState.validatePortProto(t)
-		require.True(t, tt.state.Equals(policyMapState), "%s (MapState):\n%s", tt.name, policyMapState.Diff(tt.state))
-		require.EqualValues(t, tt.adds, changes.Adds, tt.name+" (adds)")
-		require.EqualValues(t, tt.deletes, changes.Deletes, tt.name+" (deletes)")
-	}
-}
-
 func (e MapStateEntry) asDeny() MapStateEntry {
 	if !e.IsDeny {
 		e.IsDeny = true
@@ -2818,8 +2279,6 @@ func TestMapState_denyPreferredInsertWithSubnets(t *testing.T) {
 		insertAasB // Proto and entry from B
 		insertBWithAProto
 		insertBWithAProtoAsDeny
-		insertAasDeny
-		insertBasDeny
 		worldIPl3only        // Do not expect L4 keys for IP covered by a subnet
 		worldIPProtoOnly     // Do not expect port keys for IP covered by a subnet
 		worldSubnetl3only    // Do not expect L4 keys for IP subnet
@@ -2850,8 +2309,8 @@ func TestMapState_denyPreferredInsertWithSubnets(t *testing.T) {
 		outcome          action
 	}{
 		// deny-allow insertions
-		{"deny-allow: a superset a|b L3-only; subset allow inserted as deny", WithAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 0, 0, 0, 0, insertAllowAll | insertA | insertBasDeny},
-		{"deny-allow: a superset a|b L3-only; without allow-all", WithoutAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 0, 0, 0, 0, insertA | insertBasDeny},
+		{"deny-allow: a superset a|b L3-only; subset allow inserted as deny", WithAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 0, 0, 0, 0, insertAllowAll | insertA},
+		{"deny-allow: a superset a|b L3-only; without allow-all", WithoutAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 0, 0, 0, 0, insertA},
 
 		{"deny-allow: b superset a|b L3-only", WithAllowAll, worldIPSelections, worldSubnetSelections, true, false, 0, 0, 0, 0, insertAllowAll | insertBoth},
 		{"deny-allow: b superset a|b L3-only; without allow-all", WithoutAllowAll, worldIPSelections, worldSubnetSelections, true, false, 0, 0, 0, 0, insertBoth},
@@ -2874,8 +2333,8 @@ func TestMapState_denyPreferredInsertWithSubnets(t *testing.T) {
 		{"deny-allow: b superset a L4, b L3-only", WithAllowAll, worldIPSelections, worldSubnetSelections, true, false, 0, 6, 0, 0, insertAllowAll | insertBoth},
 		{"deny-allow: b superset a L4, b L3-only; without allow-all", WithoutAllowAll, worldIPSelections, worldSubnetSelections, true, false, 0, 6, 0, 0, insertBoth},
 
-		{"deny-allow: a superset a L4, b L4; subset allow inserted as deny", WithAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 0, 6, 0, 6, insertAllowAll | insertA | insertBasDeny},
-		{"deny-allow: a superset a L4, b L4; without allow-all, subset allow inserted as deny", WithoutAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 0, 6, 0, 6, insertA | insertBasDeny},
+		{"deny-allow: a superset a L4, b L4; subset allow inserted as deny", WithAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 0, 6, 0, 6, insertAllowAll | insertA},
+		{"deny-allow: a superset a L4, b L4; without allow-all, subset allow inserted as deny", WithoutAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 0, 6, 0, 6, insertA},
 
 		{"deny-allow: b superset a L4, b L4", WithAllowAll, worldIPSelections, worldSubnetSelections, true, false, 0, 6, 0, 6, insertAllowAll | insertBoth},
 		{"deny-allow: b superset a L4, b L4; without allow-all", WithoutAllowAll, worldIPSelections, worldSubnetSelections, true, false, 0, 6, 0, 6, insertBoth},
@@ -2898,8 +2357,8 @@ func TestMapState_denyPreferredInsertWithSubnets(t *testing.T) {
 		{"deny-allow: b superset a L3L4, b L4", WithAllowAll, worldIPSelections, worldSubnetSelections, true, false, 80, 6, 0, 6, insertAllowAll | insertBoth},
 		{"deny-allow: b superset a L3L4, b L4 without allow-all", WithoutAllowAll, worldIPSelections, worldSubnetSelections, true, false, 80, 6, 0, 6, insertBoth},
 
-		{"deny-allow: a superset a L3L4, b L3L4", WithAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 80, 6, 80, 6, insertAllowAll | insertA | insertBasDeny},
-		{"deny-allow: a superset a L3L4, b L3L4 without allow-all", WithoutAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 80, 6, 80, 6, insertA | insertBasDeny},
+		{"deny-allow: a superset a L3L4, b L3L4", WithAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 80, 6, 80, 6, insertAllowAll | insertA},
+		{"deny-allow: a superset a L3L4, b L3L4 without allow-all", WithoutAllowAll, reservedWorldSelections, worldSubnetSelections, true, false, 80, 6, 80, 6, insertA},
 
 		{"deny-allow: b superset a L3L4, b L3L4", WithAllowAll, worldIPSelections, worldSubnetSelections, true, false, 80, 6, 80, 6, insertAllowAll | insertBoth},
 		{"deny-allow: b superset a L3L4, b L3L4; without allow-all", WithoutAllowAll, worldIPSelections, worldSubnetSelections, true, false, 80, 6, 80, 6, insertBoth},
@@ -3078,16 +2537,6 @@ func TestMapState_denyPreferredInsertWithSubnets(t *testing.T) {
 		if tt.outcome&insertA > 0 {
 			for _, aKey := range aKeys {
 				expectedKeys.insert(aKey, aEntry)
-			}
-		}
-		if tt.outcome&insertAasDeny > 0 {
-			for _, aKey := range aKeys {
-				expectedKeys.insert(aKey, aEntry.asDeny())
-			}
-		}
-		if tt.outcome&insertBasDeny > 0 {
-			for _, bKey := range bKeys {
-				expectedKeys.insert(bKey, bEntry.asDeny())
 			}
 		}
 		if tt.outcome&insertAWithBProto > 0 {
@@ -3300,5 +2749,5 @@ func TestDenyPreferredInsertLogic(t *testing.T) {
 
 	n := epPolicy.policyMapState.Len()
 	p.Detach()
-	assert.True(t, n > 0)
+	assert.Positive(t, n)
 }

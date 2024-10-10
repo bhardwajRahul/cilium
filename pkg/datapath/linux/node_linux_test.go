@@ -46,7 +46,7 @@ import (
 
 type linuxPrivilegedBaseTestSuite struct {
 	sysctl     sysctl.Sysctl
-	mtuConfig  mtu.Configuration
+	mtuCalc    mtu.RouteMTU
 	enableIPv4 bool
 	enableIPv6 bool
 
@@ -103,7 +103,8 @@ func setupLinuxPrivilegedBaseTestSuite(tb testing.TB, addressing datapath.NodeAd
 	s.sysctl = sysctl.NewDirectSysctl(afero.NewOsFs(), "/proc")
 
 	rlimit.RemoveMemlock()
-	s.mtuConfig = mtu.NewConfiguration(0, false, false, false, false, 1500, nil, false)
+	mtuConfig := mtu.NewConfiguration(0, false, false, false, false)
+	s.mtuCalc = mtuConfig.Calculate(1500)
 	s.enableIPv6 = enableIPv6
 	s.enableIPv4 = enableIPv4
 
@@ -143,9 +144,9 @@ func setupLinuxPrivilegedBaseTestSuite(tb testing.TB, addressing datapath.NodeAd
 		AllocCIDRIPv6:       addressing.IPv6().AllocationCIDR(),
 		EnableIPv4:          s.enableIPv4,
 		EnableIPv6:          s.enableIPv6,
-		DeviceMTU:           s.mtuConfig.GetDeviceMTU(),
-		RouteMTU:            s.mtuConfig.GetRouteMTU(),
-		RoutePostEncryptMTU: s.mtuConfig.GetRoutePostEncryptMTU(),
+		DeviceMTU:           s.mtuCalc.DeviceMTU,
+		RouteMTU:            s.mtuCalc.RouteMTU,
+		RoutePostEncryptMTU: s.mtuCalc.RoutePostEncryptMTU,
 	}
 
 	tunnel.SetTunnelMap(tunnel.NewTunnelMap("test_cilium_tunnel_map"))
@@ -200,6 +201,7 @@ func setupLinuxPrivilegedIPv4AndIPv6TestSuite(tb testing.TB) *linuxPrivilegedIPv
 }
 
 func tearDownTest(tb testing.TB) {
+	ipsec.UnsetTestIPSecKey()
 	ipsec.DeleteXFRM(hivetest.Logger(tb), ipsec.AllReqID)
 	node.UnsetTestLocalNodeStore()
 	removeDevice(dummyHostDeviceName)
@@ -468,7 +470,7 @@ func (s *linuxPrivilegedBaseTestSuite) commonNodeUpdateEncapsulation(t *testing.
 	if s.enableIPv4 {
 		underlayIP, err := tunnel.TunnelMap().GetTunnelEndpoint(cmtypes.MustAddrClusterFromIP(ip4Alloc1.IP))
 		require.NoError(t, err)
-		require.Equal(t, true, underlayIP.Equal(externalNodeIP1))
+		require.True(t, underlayIP.Equal(externalNodeIP1))
 
 		foundRoute, err := linuxNodeHandler.lookupNodeRoute(ip4Alloc1, false)
 		require.NoError(t, err)
@@ -478,7 +480,7 @@ func (s *linuxPrivilegedBaseTestSuite) commonNodeUpdateEncapsulation(t *testing.
 	if s.enableIPv6 {
 		underlayIP, err := tunnel.TunnelMap().GetTunnelEndpoint(cmtypes.MustAddrClusterFromIP(ip6Alloc1.IP))
 		require.NoError(t, err)
-		require.Equal(t, true, underlayIP.Equal(externalNodeIP1))
+		require.True(t, underlayIP.Equal(externalNodeIP1))
 
 		foundRoute, err := linuxNodeHandler.lookupNodeRoute(ip6Alloc1, false)
 		require.NoError(t, err)
@@ -508,7 +510,7 @@ func (s *linuxPrivilegedBaseTestSuite) commonNodeUpdateEncapsulation(t *testing.
 	if s.enableIPv4 {
 		underlayIP, err := tunnel.TunnelMap().GetTunnelEndpoint(cmtypes.MustAddrClusterFromIP(ip4Alloc1.IP))
 		require.NoError(t, err)
-		require.Equal(t, true, underlayIP.Equal(externalNodeIP2))
+		require.True(t, underlayIP.Equal(externalNodeIP2))
 
 		foundRoute, err := linuxNodeHandler.lookupNodeRoute(ip4Alloc1, false)
 		require.NoError(t, err)
@@ -518,7 +520,7 @@ func (s *linuxPrivilegedBaseTestSuite) commonNodeUpdateEncapsulation(t *testing.
 	if s.enableIPv6 {
 		underlayIP, err := tunnel.TunnelMap().GetTunnelEndpoint(cmtypes.MustAddrClusterFromIP(ip6Alloc1.IP))
 		require.NoError(t, err)
-		require.Equal(t, true, underlayIP.Equal(externalNodeIP2))
+		require.True(t, underlayIP.Equal(externalNodeIP2))
 
 		foundRoute, err := linuxNodeHandler.lookupNodeRoute(ip6Alloc1, false)
 		require.NoError(t, err)
@@ -555,7 +557,7 @@ func (s *linuxPrivilegedBaseTestSuite) commonNodeUpdateEncapsulation(t *testing.
 		// alloc range v2 should map to underlay1
 		underlayIP, err := tunnel.TunnelMap().GetTunnelEndpoint(cmtypes.MustAddrClusterFromIP(ip4Alloc2.IP))
 		require.NoError(t, err)
-		require.Equal(t, true, underlayIP.Equal(externalNodeIP1))
+		require.True(t, underlayIP.Equal(externalNodeIP1))
 
 		// node routes for alloc1 ranges should be gone
 		foundRoute, err := linuxNodeHandler.lookupNodeRoute(ip4Alloc1, false)
@@ -572,7 +574,7 @@ func (s *linuxPrivilegedBaseTestSuite) commonNodeUpdateEncapsulation(t *testing.
 		// alloc range v2 should map to underlay1
 		underlayIP, err := tunnel.TunnelMap().GetTunnelEndpoint(cmtypes.MustAddrClusterFromIP(ip6Alloc2.IP))
 		require.NoError(t, err)
-		require.Equal(t, true, underlayIP.Equal(externalNodeIP1))
+		require.True(t, underlayIP.Equal(externalNodeIP1))
 
 		// node routes for alloc1 ranges should be gone
 		foundRoute, err := linuxNodeHandler.lookupNodeRoute(ip6Alloc1, false)
@@ -640,7 +642,7 @@ func (s *linuxPrivilegedBaseTestSuite) commonNodeUpdateEncapsulation(t *testing.
 		// alloc range v2 should map to underlay1
 		underlayIP, err := tunnel.TunnelMap().GetTunnelEndpoint(cmtypes.MustAddrClusterFromIP(ip4Alloc2.IP))
 		require.NoError(t, err)
-		require.Equal(t, true, underlayIP.Equal(externalNodeIP1))
+		require.True(t, underlayIP.Equal(externalNodeIP1))
 
 		// node routes for alloc2 ranges should have been installed
 		foundRoute, err := linuxNodeHandler.lookupNodeRoute(ip4Alloc2, false)
@@ -652,7 +654,7 @@ func (s *linuxPrivilegedBaseTestSuite) commonNodeUpdateEncapsulation(t *testing.
 		// alloc range v2 should map to underlay1
 		underlayIP, err := tunnel.TunnelMap().GetTunnelEndpoint(cmtypes.MustAddrClusterFromIP(ip6Alloc2.IP))
 		require.NoError(t, err)
-		require.Equal(t, true, underlayIP.Equal(externalNodeIP1))
+		require.True(t, underlayIP.Equal(externalNodeIP1))
 
 		// node routes for alloc2 ranges should have been installed
 		foundRoute, err := linuxNodeHandler.lookupNodeRoute(ip6Alloc2, false)
@@ -827,6 +829,9 @@ func TestNodeChurnXFRMLeaks(t *testing.T) {
 	option.Config.EncryptInterface = []string{externalNodeDevice}
 	option.Config.RoutingMode = option.RoutingModeNative
 
+	// Same test suite, remove previous IPSec key.
+	ipsec.UnsetTestIPSecKey()
+
 	// Cover the XFRM configuration for subnet encryption: IPAM modes AKS and EKS.
 	ipv4PodSubnets, err := cidr.ParseCIDR("4.4.0.0/16")
 	require.NoError(t, err)
@@ -866,8 +871,8 @@ func (s *linuxPrivilegedIPv4OnlyTestSuite) testEncryptedOverlayXFRMLeaks(t *test
 		}),
 	)
 
-	require.Nil(t, h.Start(tlog, context.TODO()))
-	defer func() { require.Nil(t, h.Stop(tlog, context.TODO())) }()
+	require.NoError(t, h.Start(tlog, context.TODO()))
+	defer func() { require.NoError(t, h.Stop(tlog, context.TODO())) }()
 	require.NotNil(t, linuxNodeHandler)
 
 	err = linuxNodeHandler.NodeConfigurationChanged(config)
@@ -888,7 +893,7 @@ func (s *linuxPrivilegedIPv4OnlyTestSuite) testEncryptedOverlayXFRMLeaks(t *test
 
 	states, err := netlink.XfrmStateList(netlink.FAMILY_ALL)
 	require.NoError(t, err)
-	require.Equal(t, 4, len(states))
+	require.Len(t, states, 4)
 	policies, err := netlink.XfrmPolicyList(netlink.FAMILY_ALL)
 	require.NoError(t, err)
 	require.Equal(t, 2, countXFRMPolicies(policies))
@@ -901,7 +906,7 @@ func (s *linuxPrivilegedIPv4OnlyTestSuite) testEncryptedOverlayXFRMLeaks(t *test
 
 	states, err = netlink.XfrmStateList(netlink.FAMILY_ALL)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(states))
+	require.Len(t, states, 2)
 	policies, err = netlink.XfrmPolicyList(netlink.FAMILY_ALL)
 	require.NoError(t, err)
 	require.Equal(t, 1, countXFRMPolicies(policies))
@@ -935,7 +940,7 @@ func (s *linuxPrivilegedBaseTestSuite) testNodeChurnXFRMLeaksWithConfig(t *testi
 
 	states, err := netlink.XfrmStateList(netlink.FAMILY_ALL)
 	require.NoError(t, err)
-	require.NotEqual(t, 0, len(states))
+	require.NotEmpty(t, states)
 	policies, err := netlink.XfrmPolicyList(netlink.FAMILY_ALL)
 	require.NoError(t, err)
 	require.NotEqual(t, 0, countXFRMPolicies(policies))
@@ -946,7 +951,7 @@ func (s *linuxPrivilegedBaseTestSuite) testNodeChurnXFRMLeaksWithConfig(t *testi
 
 	states, err = netlink.XfrmStateList(netlink.FAMILY_ALL)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(states))
+	require.Empty(t, states)
 	policies, err = netlink.XfrmPolicyList(netlink.FAMILY_ALL)
 	require.NoError(t, err)
 	require.Equal(t, 0, countXFRMPolicies(policies))
@@ -1033,7 +1038,7 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 
 	foundRoutes, err := lookupDirectRoute(log, ip4Alloc1, externalNode1IP4v1)
 	require.NoError(t, err)
-	require.Equal(t, expectedIPv4Routes, len(foundRoutes))
+	require.Len(t, foundRoutes, expectedIPv4Routes)
 
 	// nodev2: ip4Alloc1 => externalNodeIP2
 	nodev2 := nodeTypes.Node{
@@ -1049,7 +1054,7 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 
 	foundRoutes, err = lookupDirectRoute(log, ip4Alloc1, externalNode1IP4v2)
 	require.NoError(t, err)
-	require.Equal(t, expectedIPv4Routes, len(foundRoutes))
+	require.Len(t, foundRoutes, expectedIPv4Routes)
 
 	// nodev3: ip4Alloc2 => externalNodeIP2
 	nodev3 := nodeTypes.Node{
@@ -1065,12 +1070,12 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 	// node routes for alloc1 ranges should be gone
 	foundRoutes, err = lookupDirectRoute(log, ip4Alloc1, externalNode1IP4v2)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(foundRoutes)) // route should not exist regardless whether ipv4 is enabled or not
+	require.Empty(t, foundRoutes) // route should not exist regardless whether ipv4 is enabled or not
 
 	// node routes for alloc2 ranges should have been installed
 	foundRoutes, err = lookupDirectRoute(log, ip4Alloc2, externalNode1IP4v2)
 	require.NoError(t, err)
-	require.Equal(t, expectedIPv4Routes, len(foundRoutes))
+	require.Len(t, foundRoutes, expectedIPv4Routes)
 
 	// nodev4: no longer announce CIDR
 	nodev4 := nodeTypes.Node{
@@ -1085,7 +1090,7 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 	// node routes for alloc2 ranges should have been removed
 	foundRoutes, err = lookupDirectRoute(log, ip4Alloc2, externalNode1IP4v2)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(foundRoutes))
+	require.Empty(t, foundRoutes)
 
 	// nodev5: Re-announce CIDR
 	nodev5 := nodeTypes.Node{
@@ -1101,7 +1106,7 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 	// node routes for alloc2 ranges should have been removed
 	foundRoutes, err = lookupDirectRoute(log, ip4Alloc2, externalNode1IP4v2)
 	require.NoError(t, err)
-	require.Equal(t, expectedIPv4Routes, len(foundRoutes))
+	require.Len(t, foundRoutes, expectedIPv4Routes)
 
 	// delete nodev5
 	err = linuxNodeHandler.NodeDelete(nodev5)
@@ -1110,7 +1115,7 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 	// node routes for alloc2 ranges should be gone
 	foundRoutes, err = lookupDirectRoute(log, ip4Alloc2, externalNode1IP4v2)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(foundRoutes)) // route should not exist regardless whether ipv4 is enabled or not
+	require.Empty(t, foundRoutes) // route should not exist regardless whether ipv4 is enabled or not
 
 	// nodev6: Re-introduce node with secondary CIDRs
 	nodev6 := nodeTypes.Node{
@@ -1128,7 +1133,7 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 	for _, ip4Alloc := range []*cidr.CIDR{ip4Alloc1, ipv4SecondaryAlloc1, ipv4SecondaryAlloc2} {
 		foundRoutes, err = lookupDirectRoute(log, ip4Alloc, externalNode1IP4v1)
 		require.NoError(t, err)
-		require.Equal(t, expectedIPv4Routes, len(foundRoutes))
+		require.Len(t, foundRoutes, expectedIPv4Routes)
 	}
 
 	// nodev7: Replace a secondary route
@@ -1147,12 +1152,12 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 	for _, ip4Alloc := range []*cidr.CIDR{ip4Alloc1, ipv4SecondaryAlloc1, ipv4SecondaryAlloc3} {
 		foundRoutes, err = lookupDirectRoute(log, ip4Alloc, externalNode1IP4v1)
 		require.NoError(t, err)
-		require.Equal(t, expectedIPv4Routes, len(foundRoutes))
+		require.Len(t, foundRoutes, expectedIPv4Routes)
 	}
 	// Checks route for removed CIDR has been deleted
 	foundRoutes, err = lookupDirectRoute(log, ipv4SecondaryAlloc2, externalNode1IP4v1)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(foundRoutes))
+	require.Empty(t, foundRoutes)
 
 	// nodev8: Change node IP to externalNode1IP4v2
 	nodev8 := nodeTypes.Node{
@@ -1170,13 +1175,13 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 	for _, ip4Alloc := range []*cidr.CIDR{ip4Alloc1, ipv4SecondaryAlloc1, ipv4SecondaryAlloc3} {
 		foundRoutes, err = lookupDirectRoute(log, ip4Alloc, externalNode1IP4v2)
 		require.NoError(t, err)
-		require.Equal(t, expectedIPv4Routes, len(foundRoutes))
+		require.Len(t, foundRoutes, expectedIPv4Routes)
 	}
 	// Checks all routes with the old node IP have been deleted
 	for _, ip4Alloc := range []*cidr.CIDR{ip4Alloc1, ipv4SecondaryAlloc1, ipv4SecondaryAlloc3} {
 		foundRoutes, err = lookupDirectRoute(log, ip4Alloc, externalNode1IP4v1)
 		require.NoError(t, err)
-		require.Equal(t, 0, len(foundRoutes))
+		require.Empty(t, foundRoutes)
 	}
 
 	// nodev9: replacement of primary route, removal of secondary CIDRs
@@ -1194,13 +1199,13 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 	// Checks primary route has been created
 	foundRoutes, err = lookupDirectRoute(log, ip4Alloc2, externalNode1IP4v2)
 	require.NoError(t, err)
-	require.Equal(t, expectedIPv4Routes, len(foundRoutes))
+	require.Len(t, foundRoutes, expectedIPv4Routes)
 
 	// Checks all old routes have been deleted
 	for _, ip4Alloc := range []*cidr.CIDR{ip4Alloc1, ipv4SecondaryAlloc1, ipv4SecondaryAlloc3} {
 		foundRoutes, err = lookupDirectRoute(log, ip4Alloc, externalNode1IP4v2)
 		require.NoError(t, err)
-		require.Equal(t, 0, len(foundRoutes))
+		require.Empty(t, foundRoutes)
 	}
 
 	// delete nodev9
@@ -1210,7 +1215,7 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeUpdateDirectRouting(t *testing.T)
 	// remaining primary node route must have been deleted
 	foundRoutes, err = lookupDirectRoute(log, ip4Alloc2, externalNode1IP4v2)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(foundRoutes))
+	require.Empty(t, foundRoutes)
 }
 
 func (s *linuxPrivilegedBaseTestSuite) TestAgentRestartOptionChanges(t *testing.T) {
@@ -1366,11 +1371,11 @@ func (s *linuxPrivilegedBaseTestSuite) TestNodeValidationDirectRouting(t *testin
 	require.NoError(t, err)
 
 	if s.enableIPv4 {
-		require.Equal(t, true, lookupFakeRoute(t, linuxNodeHandler, ip4Alloc1))
+		require.True(t, lookupFakeRoute(t, linuxNodeHandler, ip4Alloc1))
 	}
 
 	if s.enableIPv6 {
-		require.Equal(t, true, lookupFakeRoute(t, linuxNodeHandler, ip6Alloc1))
+		require.True(t, lookupFakeRoute(t, linuxNodeHandler, ip6Alloc1))
 	}
 }
 
@@ -1526,7 +1531,7 @@ func TestArpPingHandlingIPv6(t *testing.T) {
 			}
 			return false
 		}, 5*time.Second)
-		require.Nil(t, err, fmt.Sprintf("expected neighbor %s", ip))
+		require.NoError(t, err, "expected neighbor %s", ip)
 	}
 
 	assertNoNeigh := func(msg string, ips ...net.IP) {
@@ -1543,7 +1548,7 @@ func TestArpPingHandlingIPv6(t *testing.T) {
 			}
 			return true
 		}, 5*time.Second)
-		require.Nil(t, err, msg)
+		require.NoError(t, err, msg)
 	}
 
 	nodev1 := nodeTypes.Node{
@@ -1672,7 +1677,7 @@ func TestArpPingHandlingIPv6(t *testing.T) {
 			return false
 		}, 60*time.Second, 200*time.Millisecond)
 		require.NoError(t, err)
-		require.Equal(t, true, found)
+		require.True(t, found)
 	}
 
 	// Cleanup
@@ -1825,7 +1830,7 @@ func TestArpPingHandlingIPv6(t *testing.T) {
 			IP:   node2IP}},
 	}
 	now = time.Now()
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev2))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev2))
 	wait(nodev2.Identity(), "veth0", &now, false)
 
 	node3IP := net.ParseIP("f00b::250")
@@ -1836,7 +1841,7 @@ func TestArpPingHandlingIPv6(t *testing.T) {
 			IP:   node3IP,
 		}},
 	}
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev3))
 	wait(nodev3.Identity(), "veth0", &now, false)
 
 	nextHop := net.ParseIP("f00d::250")
@@ -1845,19 +1850,19 @@ func TestArpPingHandlingIPv6(t *testing.T) {
 	assertNoNeigh("node{2,3} should not be in the same L2", node2IP, node3IP)
 
 	// Check that removing node2 will not remove nextHop, as it is still used by node3
-	require.Nil(t, linuxNodeHandler.NodeDelete(nodev2))
+	require.NoError(t, linuxNodeHandler.NodeDelete(nodev2))
 	wait(nodev2.Identity(), "veth0", nil, true)
 
 	assertNeigh(nextHop, func(n netlink.Neigh) bool { return true })
 
 	// However, removing node3 should remove the neigh entry for nextHop
-	require.Nil(t, linuxNodeHandler.NodeDelete(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeDelete(nodev3))
 	wait(nodev3.Identity(), "veth0", nil, true)
 
 	assertNoNeigh("expected removed neigh "+nextHop.String(), nextHop)
 
 	now = time.Now()
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev3))
 	wait(nodev3.Identity(), "veth0", &now, false)
 
 	nextHop = net.ParseIP("f00d::250")
@@ -1891,11 +1896,11 @@ func TestArpPingHandlingIPv6(t *testing.T) {
 	// address to check the refcount behavior, and that the old one was
 	// deleted from the neighbor table as well as the new one added.
 	now = time.Now()
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev2))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev2))
 	wait(nodev2.Identity(), "veth0", &now, false)
 
 	now = time.Now()
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev3))
 	wait(nodev3.Identity(), "veth0", &now, false)
 
 	nextHop = net.ParseIP("f00d::250")
@@ -1967,7 +1972,7 @@ func TestArpPingHandlingIPv6(t *testing.T) {
 	nextHop = net.ParseIP("f00d::251")
 	assertNeigh(nextHop, neighStateOk)
 
-	require.Nil(t, linuxNodeHandler.NodeDelete(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeDelete(nodev3))
 	wait(nodev3.Identity(), "veth0", nil, true)
 
 	// In the next test, we have node2 left in the neighbor table, and
@@ -2000,7 +2005,7 @@ func TestArpPingHandlingIPv6(t *testing.T) {
 	assertNeigh(nextHop, neighStateOk)
 	assertNoNeigh("node2 should not be in the same L2", node2IP)
 
-	require.Nil(t, linuxNodeHandler.NodeDelete(nodev2))
+	require.NoError(t, linuxNodeHandler.NodeDelete(nodev2))
 	wait(nodev2.Identity(), "veth0", nil, true)
 
 	linuxNodeHandler.NodeCleanNeighborsLink(veth0, false)
@@ -2340,7 +2345,7 @@ func TestArpPingHandlingForMultiDeviceIPv6(t *testing.T) {
 				found = true
 			}
 		}
-		require.Equal(t, false, found)
+		require.False(t, found)
 
 		time.Sleep(1 * time.Second)
 	}
@@ -2700,7 +2705,7 @@ func TestArpPingHandlingIPv4(t *testing.T) {
 			return false
 		}, 60*time.Second, 200*time.Millisecond)
 		require.NoError(t, err)
-		require.Equal(t, true, found)
+		require.True(t, found)
 	}
 
 	// Cleanup
@@ -2854,7 +2859,7 @@ func TestArpPingHandlingIPv4(t *testing.T) {
 		}},
 	}
 	now = time.Now()
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev2))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev2))
 	wait(nodev2.Identity(), "veth0", &now, false)
 
 	node3IP := net.ParseIP("7.7.7.250")
@@ -2865,7 +2870,7 @@ func TestArpPingHandlingIPv4(t *testing.T) {
 			IP:   node3IP,
 		}},
 	}
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev3))
 	wait(nodev3.Identity(), "veth0", &now, false)
 
 	nextHop := net.ParseIP("9.9.9.250")
@@ -2873,19 +2878,19 @@ func TestArpPingHandlingIPv4(t *testing.T) {
 	assertNoNeigh("node{2,3} should not be in the same L2", node2IP, node3IP)
 
 	// Check that removing node2 will not remove nextHop, as it is still used by node3
-	require.Nil(t, linuxNodeHandler.NodeDelete(nodev2))
+	require.NoError(t, linuxNodeHandler.NodeDelete(nodev2))
 	wait(nodev2.Identity(), "veth0", nil, true)
 
 	assertNeigh(nextHop, func(n netlink.Neigh) bool { return true })
 
 	// However, removing node3 should remove the neigh entry for nextHop
-	require.Nil(t, linuxNodeHandler.NodeDelete(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeDelete(nodev3))
 	wait(nodev3.Identity(), "veth0", nil, true)
 
 	assertNoNeigh("expected removed neigh "+nextHop.String(), nextHop)
 
 	now = time.Now()
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev3))
 	wait(nodev3.Identity(), "veth0", &now, false)
 
 	nextHop = net.ParseIP("9.9.9.250")
@@ -2919,11 +2924,11 @@ func TestArpPingHandlingIPv4(t *testing.T) {
 	// address to check the refcount behavior, and that the old one was
 	// deleted from the neighbor table as well as the new one added.
 	now = time.Now()
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev2))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev2))
 	wait(nodev2.Identity(), "veth0", &now, false)
 
 	now = time.Now()
-	require.Nil(t, linuxNodeHandler.NodeAdd(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeAdd(nodev3))
 	wait(nodev3.Identity(), "veth0", &now, false)
 
 	nextHop = net.ParseIP("9.9.9.250")
@@ -2994,7 +2999,7 @@ func TestArpPingHandlingIPv4(t *testing.T) {
 	nextHop = net.ParseIP("9.9.9.251")
 	assertNeigh(nextHop, neighStateOk)
 
-	require.Nil(t, linuxNodeHandler.NodeDelete(nodev3))
+	require.NoError(t, linuxNodeHandler.NodeDelete(nodev3))
 	wait(nodev3.Identity(), "veth0", nil, true)
 
 	// In the next test, we have node2 left in the neighbor table, and
@@ -3027,7 +3032,7 @@ func TestArpPingHandlingIPv4(t *testing.T) {
 	assertNeigh(nextHop, neighStateOk)
 	assertNoNeigh("node2 should not be in the same L2", node2IP)
 
-	require.Nil(t, linuxNodeHandler.NodeDelete(nodev2))
+	require.NoError(t, linuxNodeHandler.NodeDelete(nodev2))
 	wait(nodev2.Identity(), "veth0", nil, true)
 
 	linuxNodeHandler.NodeCleanNeighborsLink(veth0, false)
@@ -3364,7 +3369,7 @@ func TestArpPingHandlingForMultiDeviceIPv4(t *testing.T) {
 				found = true
 			}
 		}
-		require.Equal(t, false, found)
+		require.False(t, found)
 
 		time.Sleep(1 * time.Second)
 	}

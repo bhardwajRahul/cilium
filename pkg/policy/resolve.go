@@ -73,7 +73,6 @@ type PolicyOwner interface {
 	GetID() uint64
 	LookupRedirectPort(ingress bool, protocol string, port uint16, listener string) (uint16, error)
 	GetRealizedRedirects() map[string]uint16
-	HasBPFPolicyMap() bool
 	GetNamedPort(ingress bool, name string, proto u8proto.U8proto) uint16
 	PolicyDebug(fields logrus.Fields, msg string)
 }
@@ -225,11 +224,6 @@ func (p *EndpointPolicy) DeleteMapState(key Key) {
 func (p *EndpointPolicy) RevertChanges(changes ChangeState) {
 	// SelectorCache used as Identities interface which only has GetPrefix() that needs no lock
 	p.policyMapState.revertChanges(changes)
-}
-
-func (p *EndpointPolicy) AddVisibilityKeys(e PolicyOwner, redirectPort uint16, visMeta *VisibilityMetadata, changes ChangeState) {
-	// SelectorCache used as Identities interface which only has GetPrefix() that needs no lock
-	p.policyMapState.addVisibilityKeys(e, redirectPort, visMeta, changes)
 }
 
 // toMapState transforms the EndpointPolicy.L4Policy into
